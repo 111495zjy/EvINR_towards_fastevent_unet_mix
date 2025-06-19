@@ -28,6 +28,7 @@ def config_parser():
     parser.add_argument('--val_resolution', type=int, default=30, help='Number of validation frames')
     parser.add_argument('--no_c2f', action='store_true', default=True, help='Whether to use coarse-to-fine training')
     parser.add_argument('--iters', type=int, default=2000, help='Training iterations')
+    parser.add_argument('--iters_2', type=int, default=2000, help='Training iterations')
     parser.add_argument('--log_interval', type=int, default=100, help='Logging interval')
     parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
     parser.add_argument('--net_layers', type=int, default=3, help='Number of layers in the network')
@@ -100,7 +101,7 @@ def main(args):
 
             # 将 NumPy 数组转换为 PIL 图像对象
             image = Image.fromarray(image_data)
-            output_path = os.path.join('/content/EvINR_towards_fastevent_unet/logs', 'output_image_{}.png'.format(i))
+            output_path = os.path.join('/content/EvINR_towards_fastevent_unet_mix/logs', 'output_image_{}.png'.format(i))
             image.save(output_path)
     
     with torch.no_grad():
@@ -115,7 +116,7 @@ def main(args):
 
             # 将 NumPy 数组转换为 PIL 图像对象
             image = Image.fromarray(image_data)
-            output_path = os.path.join('/content/EvINR_towards_fastevent_unet/logs_2', 'output_image_{}.png'.format(i))
+            output_path = os.path.join('/content/EvINR_towards_fastevent_unet_mix/logs_2', 'output_image_{}.png'.format(i))
             image.save(output_path)      
 
 
