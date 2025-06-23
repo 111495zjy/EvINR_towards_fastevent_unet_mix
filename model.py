@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import math
-
 def skip(
         num_input_channels=2, num_output_channels=3, 
         num_channels_down=[16, 32, 64, 128, 128], num_channels_up=[16, 32, 64, 128, 128], num_channels_skip=[4, 4, 4, 4, 4], 
@@ -100,21 +99,23 @@ def skip(
 
 
 class EvINRModel(nn.Module):
-    def __init__(self,):
+    def __init__(self,H=180, W=240):
         super().__init__()
         self.net = skip(
-        num_input_channels=1, num_output_channels=1, 
-        num_channels_down=[128, 128, 128, 128, 128], num_channels_up=[128, 128, 128, 128, 128], num_channels_skip=[4, 4, 4, 4, 4], 
+        num_input_channels=2, num_output_channels=1, 
+        num_channels_down=[128, 128, 128, 128, 128,128], num_channels_up=[128,128, 128, 128, 128, 128], num_channels_skip=[4,4, 4, 4, 4, 4], 
         filter_size_down=3, filter_size_up=3, filter_skip_size=1,
         need_sigmoid=True, need_bias=True, 
         pad='zero', upsample_mode='nearest', downsample_mode='stride', act_fun='LeakyReLU', 
         need1x1_up=True)
-
-
-
+        self.net0 = Siren(
+            n_layers=3, d_input=1, d_hidden=1024, d_neck=1024, 
+            d_output=H*W
+        )
+        self.H, self.W = H, W
 
     def t_map(self,H, W, timestamp,num_frame):
-        freq = 2**(torch.arange(H*W, dtype=torch.float32, device=timestamp.device)/(H*W))*math.pi*timestamp
+        freq = 2**(torch.arange(H*W, dtype=torch.float32, device=timestamp.device)/(H*W/2))*math.pi*timestamp
         sin_comp = torch.sin(freq)
         #cos_comp = torch.cos(freq)
         pe = sin_comp
@@ -124,25 +125,33 @@ class EvINRModel(nn.Module):
 
     def forward(self, timestamps):
         num_frame = timestamps.shape[0]
-        timestamps_map = self.t_map(180,240,timestamps,num_frame)
+        timestamps_map0 = self.t_map(180,240,timestamps,num_frame)
+        timestamps_map = self.net0(timestamps)
+        timestamps_map = timestamps_map.reshape(-1,1,self.H, self.W)
+        timestamps_map = torch.cat([timestamps_map0, timestamps_map], dim=1)
         log_intensity_preds = self.net(timestamps_map)
         return log_intensity_preds
     
-    def get_losses_diff(self, log_intensity_preds, event_frames):
+    def get_losses(self, log_intensity_preds, event_frames):
         # temporal supervision to solve the event generation equation
         #print(log_intensity_preds.shape)
         event_frames = event_frames.squeeze(-1).unsqueeze(1)
         #print(event_frames.shape)
-        temperal_loss = F.mse_loss(log_intensity_preds, event_frames)
+        
+        event_frame_preds = log_intensity_preds[1:,:,:,:] - log_intensity_preds[0:-1,: ,:,:]
+        temperal_loss = F.mse_loss(event_frame_preds, event_frames[:-1,:,:,:])
         # spatial regularization to reduce noise
         x_grad = log_intensity_preds[:, : , 1:, :] - log_intensity_preds[:, : , 0:-1, :]
         y_grad = log_intensity_preds[:, :, : , 1:] - log_intensity_preds[:, :, :, 0:-1]
         spatial_loss = 0.05 * (
-            x_grad.abs().mean() + y_grad.abs().mean()
+            x_grad.abs().mean() + y_grad.abs().mean() + event_frame_preds.abs().mean()
         )
 
-
-        return temperal_loss + spatial_loss 
+        # loss term to keep the average intensity of each frame constant
+        const_loss = 0.06 * torch.var(
+            log_intensity_preds.reshape(log_intensity_preds.shape[0], -1).mean(dim=-1)
+        )
+        return temperal_loss + spatial_loss + const_loss
         
     def tonemapping(self, log_intensity_preds, gamma=0.6):
         intensity_preds = torch.exp(log_intensity_preds).detach()
@@ -328,52 +337,3 @@ def conv(in_f, out_f, kernel_size, stride=1, bias=True, pad='zero', downsample_m
 
     layers = filter(lambda x: x is not None, [padder, convolver, downsampler])
     return nn.Sequential(*layers)
-
-
-
-
-
-
-class EvINRModel_2(nn.Module):
-    def __init__(self, n_layers=3, d_hidden=512, d_neck=256, H=180, W=240, recon_colors=False):
-        super().__init__()
-
-        self.recon_colors = recon_colors
-        self.d_output = H * W * 3 if recon_colors else H * W
-        self.net = Siren(
-            n_layers=n_layers, d_input=1, d_hidden=d_hidden, d_neck=d_neck, 
-            d_output=self.d_output 
-        )
-        self.H, self.W = H, W
-        
-    def forward(self, timestamps):
-        log_intensity_preds = self.net(timestamps)
-        if self.recon_colors:
-            log_intensity_preds = log_intensity_preds.reshape(-1, self.H, self.W, 3)
-        else:
-            log_intensity_preds = log_intensity_preds.reshape(-1, self.H, self.W, 1)
-        return log_intensity_preds
-    
-    def get_losses(self, log_intensity_preds, event_frames):
-        # temporal supervision to solve the event generation equation
-        event_frame_preds = log_intensity_preds[1:] - log_intensity_preds[0: -1]
-        temperal_loss = F.mse_loss(event_frame_preds, event_frames[:-1])
-        # spatial regularization to reduce noise
-        x_grad = log_intensity_preds[:, 1: , :, :] - log_intensity_preds[:, 0: -1, :, :]
-        y_grad = log_intensity_preds[:, :, 1: , :] - log_intensity_preds[:, :, 0: -1, :]
-        spatial_loss = 0.05 * (
-            x_grad.abs().mean() + y_grad.abs().mean() + event_frame_preds.abs().mean()
-        )
-
-        # loss term to keep the average intensity of each frame constant
-        const_loss = 0.1 * torch.var(
-            log_intensity_preds.reshape(log_intensity_preds.shape[0], -1).mean(dim=-1)
-        )
-        return (temperal_loss + spatial_loss + const_loss)
-        
-    def tonemapping(self, log_intensity_preds, gamma=0.6):
-        intensity_preds = torch.exp(log_intensity_preds).detach()
-        # Reinhard tone-mapping
-        intensity_preds = (intensity_preds / (1 + intensity_preds)) ** (1 / gamma)
-        intensity_preds = intensity_preds.clamp(0, 1)
-        return intensity_preds
